@@ -1,6 +1,5 @@
 pipeline {
   agent any
-
   parameters {
     string(name: 'IMAGE_TAG', defaultValue: 'v1', description: 'Tag to build/push/deploy')
   }
@@ -21,7 +20,7 @@ pipeline {
               chmod 600 "$KCFG" || true
               echo "Copied kubeconfig from /root/.kube/config"
             else
-              echo "No kubeconfig to copy (that’s OK if already present earlier)."
+              echo "No kubeconfig to copy (ok if already set earlier)."
             fi
           fi
           kubectl config current-context || true
@@ -35,12 +34,18 @@ pipeline {
         sh '''
           set -eux
           TAG="${IMAGE_TAG:-v1}"
+
+          # tiny page + Dockerfile
           printf '<!doctype html><html><body><h1>Hello World!</h1></body></html>' > index.html
           cat > Dockerfile <<'EOF'
           FROM nginx:alpine
           COPY index.html /usr/share/nginx/html/index.html
           EOF
+
+          echo "==> docker build -t hello-nginx:${TAG} ."
           docker build -t hello-nginx:${TAG} .
+          # prove it exists (fail fast if not)
+          docker image inspect hello-nginx:${TAG} >/dev/null
         '''
       }
     }
@@ -71,7 +76,6 @@ pipeline {
           kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
 
           echo "Applying manifest with image ${IMAGE} …"
-          # apply directly from stdin to avoid here-doc/file pitfalls
           kubectl apply -f - <<EOF
           apiVersion: apps/v1
           kind: Deployment
