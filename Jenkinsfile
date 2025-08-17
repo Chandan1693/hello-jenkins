@@ -42,10 +42,7 @@ pipeline {
         TAG="${IMAGE_TAG:-v1}"
         IMAGE="docker.io/${DOCKER_USER}/hello-nginx:${TAG}"
 
-        # Helper: does local image exist?
         have_local() { docker image inspect "${IMAGE}" >/dev/null 2>&1; }
-
-        # Helper: does remote tag exist in Docker Hub?
         have_remote() { docker manifest inspect "${IMAGE}" >/dev/null 2>&1; }
 
         if [ "${FORCE_BUILD:-false}" = "true" ]; then
@@ -67,10 +64,10 @@ pipeline {
         if [ "$NEED_BUILD" -eq 1 ]; then
           echo "[build] Creating tiny web page + Dockerfile"
           printf '<!doctype html><html><body><h1>Hello World!</h1></body></html>' > index.html
-          cat > Dockerfile <<'EOF'
-          FROM nginx:alpine
-          COPY index.html /usr/share/nginx/html/index.html
-          EOF
+          cat > Dockerfile <<EOF
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/index.html
+EOF
 
           echo "[build] docker build -t ${IMAGE} ."
           docker build -t "${IMAGE}" .
@@ -127,41 +124,41 @@ pipeline {
 
         echo "[deploy] Apply manifest with image ${IMAGE}"
         kubectl apply -f - <<EOF
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: hello-nginx
-          namespace: ${NAMESPACE}
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: hello-nginx
-          template:
-            metadata:
-              labels:
-                app: hello-nginx
-            spec:
-              containers:
-              - name: web
-                image: ${IMAGE}
-                imagePullPolicy: Always
-                ports:
-                - containerPort: 80
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: hello-nginx
-          namespace: ${NAMESPACE}
-        spec:
-          type: ClusterIP
-          selector:
-            app: hello-nginx
-          ports:
-          - port: 80
-            targetPort: 80
-        EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-nginx
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-nginx
+  template:
+    metadata:
+      labels:
+        app: hello-nginx
+    spec:
+      containers:
+      - name: web
+        image: ${IMAGE}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-nginx
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: hello-nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
 
         echo "[deploy] Wait for rollout"
         kubectl -n "${NAMESPACE}" rollout status deploy/hello-nginx --timeout=180s
