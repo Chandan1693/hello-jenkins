@@ -1,31 +1,97 @@
 pipeline {
   agent any
+
+  parameters {
+    string(name: 'IMAGE_TAG', defaultValue: 'v1', description: 'Docker tag to build/push/deploy')
+  }
+
   stages {
-    stage('Preflight: docker') {
-      steps { sh 'id && groups && docker version' }
-    }
-    stage('Build & Run nginx') {
+
+    stage('Build image') {
       steps {
         sh '''
-          set -eux
-          # tiny web page + Dockerfile
-          printf '<!doctype html><html><body><h1>Hello World!</h1></body></html>' > index.html
-          cat > Dockerfile <<'DOCKER'
-          FROM nginx:alpine
-          COPY index.html /usr/share/nginx/html/index.html
-DOCKER
-
-          # stop old container if it exists (ignore errors)
+          set -e
+          # clean old local container if any (no error if missing)
           docker rm -f hello-nginx >/dev/null 2>&1 || true
 
-          # build image and run it on host port 8088
-          docker build -t hello-nginx:latest .
-          docker run -d --name hello-nginx -p 8088:80 hello-nginx:latest
+          # tiny page + Dockerfile (same as before)
+          printf '<!doctype html><html><body><h1>Hello World!</h1></body></html>' > index.html
+          cat > Dockerfile <<'EOF'
+          FROM nginx:alpine
+          COPY index.html /usr/share/nginx/html/index.html
+          EOF
 
-          # show it's running
-          docker ps --filter "name=hello-nginx" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
+          docker build -t hello-nginx:${IMAGE_TAG} .
         '''
+      }
+    }
+
+    stage('Push to Docker Hub') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            set -e
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            docker tag hello-nginx:${IMAGE_TAG} ${DOCKER_USER}/hello-nginx:${IMAGE_TAG}
+            docker push ${DOCKER_USER}/hello-nginx:${IMAGE_TAG}
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            set -e
+            NAMESPACE=hello
+
+            # create namespace if it doesn't exist
+            kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
+
+            # minimal Deployment + Service pulling from Docker Hub
+            cat > k8s.yaml <<YAML
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: hello-nginx
+              namespace: ${NAMESPACE}
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: hello-nginx
+              template:
+                metadata:
+                  labels:
+                    app: hello-nginx
+                spec:
+                  containers:
+                  - name: web
+                    image: ${DOCKER_USER}/hello-nginx:${IMAGE_TAG}
+                    ports:
+                    - containerPort: 80
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: hello-nginx
+              namespace: ${NAMESPACE}
+            spec:
+              type: ClusterIP
+              selector:
+                app: hello-nginx
+              ports:
+              - port: 80
+                targetPort: 80
+            YAML
+
+            kubectl apply -f k8s.yaml
+            kubectl -n ${NAMESPACE} rollout status deploy/hello-nginx --timeout=120s
+          '''
+        }
       }
     }
   }
 }
+
