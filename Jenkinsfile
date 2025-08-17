@@ -1,14 +1,25 @@
 pipeline {
   agent any
-  parameters {
-    string(name: 'NAME', defaultValue: 'World', description: 'Who to greet')
-  }
   stages {
-    stage('Hello') {
+    stage('Build nginx image') {
       steps {
-        // prints whatever you pass as NAME (defaults to "World")
-        echo "Hello, ${params.NAME}!"
+        sh '''
+          set -e
+          # tiny web page
+          cat > index.html <<'HTML'
+          <!doctype html>
+          <html><body><h1>Hello World!</h1></body></html>
+HTML
+          # minimal Dockerfile
+          cat > Dockerfile <<'DOCKER'
+          FROM nginx:alpine
+          COPY index.html /usr/share/nginx/html/index.html
+DOCKER
+          # build (requires docker daemon access)
+          docker build -t hello-nginx:latest .
+        '''
       }
     }
   }
 }
+
