@@ -2,25 +2,21 @@ pipeline {
   agent any
 
   parameters {
-    string(name: 'IMAGE_TAG', defaultValue: 'v1', description: 'Docker tag to build/push/deploy')
+    string(name: 'IMAGE_TAG', defaultValue: 'v1', description: 'Tag to build/push/deploy')
   }
 
   stages {
-
     stage('Build image') {
       steps {
         sh '''
           set -e
-          # clean old local container if any (no error if missing)
-          docker rm -f hello-nginx >/dev/null 2>&1 || true
-
-          # tiny page + Dockerfile (same as before)
+          # tiny page + Dockerfile
           printf '<!doctype html><html><body><h1>Hello World!</h1></body></html>' > index.html
           cat > Dockerfile <<'EOF'
           FROM nginx:alpine
           COPY index.html /usr/share/nginx/html/index.html
-          EOF
-
+EOF
+          # build the image with the tag
           docker build -t hello-nginx:${IMAGE_TAG} .
         '''
       }
@@ -41,55 +37,44 @@ pipeline {
 
     stage('Deploy to Kubernetes') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            set -e
-            NAMESPACE=hello
+        sh '''
+          set -e
+          NAMESPACE=hello
+          kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
 
-            # create namespace if it doesn't exist
-            kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
+          cat > k8s.yaml <<YAML
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: hello-nginx
+            namespace: ${NAMESPACE}
+          spec:
+            replicas: 1
+            selector: { matchLabels: { app: hello-nginx } }
+            template:
+              metadata: { labels: { app: hello-nginx } }
+              spec:
+                containers:
+                - name: web
+                  image: ${DOCKER_USER}/hello-nginx:${IMAGE_TAG}
+                  ports: [{ containerPort: 80 }]
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: hello-nginx
+            namespace: ${NAMESPACE}
+          spec:
+            type: ClusterIP
+            selector: { app: hello-nginx }
+            ports:
+            - port: 80
+              targetPort: 80
+          YAML
 
-            # minimal Deployment + Service pulling from Docker Hub
-            cat > k8s.yaml <<YAML
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: hello-nginx
-              namespace: ${NAMESPACE}
-            spec:
-              replicas: 1
-              selector:
-                matchLabels:
-                  app: hello-nginx
-              template:
-                metadata:
-                  labels:
-                    app: hello-nginx
-                spec:
-                  containers:
-                  - name: web
-                    image: ${DOCKER_USER}/hello-nginx:${IMAGE_TAG}
-                    ports:
-                    - containerPort: 80
-            ---
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: hello-nginx
-              namespace: ${NAMESPACE}
-            spec:
-              type: ClusterIP
-              selector:
-                app: hello-nginx
-              ports:
-              - port: 80
-                targetPort: 80
-            YAML
-
-            kubectl apply -f k8s.yaml
-            kubectl -n ${NAMESPACE} rollout status deploy/hello-nginx --timeout=120s
-          '''
-        }
+          kubectl apply -f k8s.yaml
+          kubectl -n ${NAMESPACE} rollout status deploy/hello-nginx --timeout=120s
+        '''
       }
     }
   }
