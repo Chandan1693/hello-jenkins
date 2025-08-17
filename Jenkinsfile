@@ -1,6 +1,3 @@
-cd ~/hello-jenkins
-
-cat > Jenkinsfile <<'EOF'
 pipeline {
   agent any
   stages {
@@ -32,9 +29,3 @@ DOCKER
     }
   }
 }
-EOF
-
-git add Jenkinsfile
-git commit -m "ci: build & run nginx (with docker preflight)"
-git push
-
