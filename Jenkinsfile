@@ -2,34 +2,77 @@ pipeline {
   agent any
 
   parameters {
-    string(name: 'IMAGE_TAG',   defaultValue: 'v1',       description: 'Docker tag to build/push/deploy')
-    string(name: 'DOCKER_USER', defaultValue: 'chand93',  description: 'Docker Hub username')
-    string(name: 'K8S_NS',      defaultValue: 'hello',    description: 'Kubernetes namespace')
-    booleanParam(name: 'FORCE_BUILD', defaultValue: false, description: 'Force build even if image tag exists')
-    booleanParam(name: 'FORCE_PUSH',  defaultValue: false, description: 'Force push even if tag exists in Docker Hub')
+    string(name: 'IMAGE_TAG',   defaultValue: 'v1',          description: 'Docker tag to build/push/deploy')
+    string(name: 'DOCKER_USER', defaultValue: 'chand93',     description: 'Docker Hub username')
+    string(name: 'K8S_NS',      defaultValue: 'hello',       description: 'Kubernetes namespace')
+    booleanParam(name: 'FORCE_BUILD', defaultValue: false,    description: 'Force image build')
+    booleanParam(name: 'FORCE_PUSH',  defaultValue: false,    description: 'Force push even if tag exists')
+    string(name: 'K3D_CLUSTER', defaultValue: 'k3s-default', description: 'k3d cluster name (context = k3d-<name>)')
+    string(name: 'KUBECONFIG_CRED', defaultValue: '',        description: 'Optional: Jenkins Secret File ID with kubeconfig')
+  }
+
+  environment {
+    KCFG = "${WORKSPACE}/.kube/config"
   }
 
   stages {
 
-    stage('Prepare kubeconfig (idempotent)') {
+    stage('Prepare kubeconfig (k3d)') {
       steps {
         sh '''#!/bin/bash
         set -euxo pipefail
-        KCFG="$HOME/.kube/config"
-        mkdir -p "$HOME/.kube"
-        if [ -s "$KCFG" ]; then
-          echo "[prep] kubeconfig present at $KCFG"
-        else
-          if sudo -n test -f /root/.kube/config 2>/dev/null; then
-            sudo -n cp -n /root/.kube/config "$KCFG" || true
-            sudo -n chown "$USER":"$USER" "$KCFG" || true
-            chmod 600 "$KCFG" || true
-            echo "[prep] Copied kubeconfig from /root/.kube/config"
-          else
-            echo "[prep] No kubeconfig to copy (OK if already configured earlier)."
-          fi
+        mkdir -p "$(dirname "$KCFG")"
+
+        # Option A: Use Jenkins Secret File credential if provided
+        if [ -n "${KUBECONFIG_CRED}" ]; then
+          echo "[prep] Using kubeconfig from Jenkins credential ${KUBECONFIG_CRED}"
         fi
+        '''
+        script {
+          if (params.KUBECONFIG_CRED?.trim()) {
+            withCredentials([file(credentialsId: params.KUBECONFIG_CRED, variable: 'KCFG_FILE')]) {
+              sh '''#!/bin/bash
+              cp -f "$KCFG_FILE" "$KCFG"
+              chmod 600 "$KCFG"
+              '''
+            }
+          } else {
+            // Option B: Fetch from k3d on the agent
+            sh '''#!/bin/bash
+            set -euxo pipefail
+            if command -v k3d >/dev/null 2>&1; then
+              echo "[prep] Fetching kubeconfig via k3d for cluster ${K3D_CLUSTER}"
+              k3d kubeconfig get "${K3D_CLUSTER}" > "$KCFG"
+              chmod 600 "$KCFG"
+            else
+              echo "[prep][WARN] k3d not found on this agent and no kubeconfig credential provided."
+              echo "[prep][WARN] Will try existing default ~/.kube/config if present."
+              if [ -s "$HOME/.kube/config" ]; then
+                cp -f "$HOME/.kube/config" "$KCFG"
+                chmod 600 "$KCFG"
+              fi
+            fi
+            '''
+          }
+        }
+        sh '''#!/bin/bash
+        set -euxo pipefail
+        export KUBECONFIG="$KCFG"
+
+        # Switch to the expected k3d context
+        KCTX="k3d-${K3D_CLUSTER}"
+        if kubectl config get-contexts "$KCTX" >/dev/null 2>&1; then
+          kubectl config use-context "$KCTX"
+        else
+          echo "[prep][WARN] Context $KCTX not found in kubeconfig; showing available contexts:"
+          kubectl config get-contexts || true
+        fi
+
+        echo "[prep] Current context:"
         kubectl config current-context || true
+
+        echo "[prep] API reachability check:"
+        kubectl version --short || true
         kubectl auth can-i get pods -A || true
         '''
       }
@@ -42,7 +85,7 @@ pipeline {
         TAG="${IMAGE_TAG:-v1}"
         IMAGE="docker.io/${DOCKER_USER}/hello-nginx:${TAG}"
 
-        have_local() { docker image inspect "${IMAGE}" >/dev/null 2>&1; }
+        have_local()  { docker image inspect "${IMAGE}" >/dev/null 2>&1; }
         have_remote() { docker manifest inspect "${IMAGE}" >/dev/null 2>&1; }
 
         if [ "${FORCE_BUILD:-false}" = "true" ]; then
@@ -50,26 +93,20 @@ pipeline {
           echo "[build] FORCE_BUILD=true -> will build"
         else
           if have_local; then
-            NEED_BUILD=0
-            echo "[build] Local image exists -> skip build"
+            NEED_BUILD=0; echo "[build] Local image exists -> skip build"
           elif have_remote; then
-            NEED_BUILD=0
-            echo "[build] Remote image exists in Docker Hub -> skip build"
+            NEED_BUILD=0; echo "[build] Remote image exists in Docker Hub -> skip build"
           else
-            NEED_BUILD=1
-            echo "[build] Image not found locally or remotely -> will build"
+            NEED_BUILD=1; echo "[build] Image not found -> will build"
           fi
         fi
 
         if [ "$NEED_BUILD" -eq 1 ]; then
-          echo "[build] Creating tiny web page + Dockerfile"
-          printf '<!doctype html><html><body><h1>Hello World!</h1></body></html>' > index.html
-          cat > Dockerfile <<EOF
+          printf '<!doctype html><html><body><h1>Hello from k3d!</h1></body></html>' > index.html
+          cat > Dockerfile <<'EOF'
 FROM nginx:alpine
 COPY index.html /usr/share/nginx/html/index.html
 EOF
-
-          echo "[build] docker build -t ${IMAGE} ."
           docker build -t "${IMAGE}" .
           docker image inspect "${IMAGE}" >/dev/null
         fi
@@ -88,22 +125,17 @@ EOF
           have_remote() { docker manifest inspect "${IMAGE}" >/dev/null 2>&1; }
 
           if [ "${FORCE_PUSH:-false}" = "true" ]; then
-            DO_PUSH=1
-            echo "[push] FORCE_PUSH=true -> will push"
+            DO_PUSH=1; echo "[push] FORCE_PUSH=true -> will push"
           else
             if have_remote; then
-              DO_PUSH=0
-              echo "[push] Remote tag already exists -> skip push"
+              DO_PUSH=0; echo "[push] Remote tag exists -> skip push"
             else
-              DO_PUSH=1
-              echo "[push] Remote tag missing -> will push"
+              DO_PUSH=1; echo "[push] Remote tag missing -> will push"
             fi
           fi
 
           if [ "$DO_PUSH" -eq 1 ]; then
-            echo "[push] docker login as ${DOCKER_USER_CRED}"
             echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER_CRED" --password-stdin
-            echo "[push] docker push ${IMAGE}"
             docker push "${IMAGE}"
           fi
           '''
@@ -112,6 +144,7 @@ EOF
     }
 
     stage('Deploy to Kubernetes') {
+      environment { KUBECONFIG = "${WORKSPACE}/.kube/config" }
       steps {
         sh '''#!/bin/bash
         set -euxo pipefail
