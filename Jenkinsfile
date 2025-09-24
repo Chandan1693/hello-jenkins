@@ -7,7 +7,7 @@ pipeline {
     string(name: 'K8S_NS',      defaultValue: 'hello',        description: 'Kubernetes namespace')
     booleanParam(name: 'FORCE_BUILD', defaultValue: false,    description: 'Force image build')
     booleanParam(name: 'FORCE_PUSH',  defaultValue: false,    description: 'Force push even if tag exists')
-    string(name: 'K3D_CLUSTER', defaultValue: 'k3d-my-karpenter-cp',  description: 'k3d cluster name (context=k3d-my-karpenter-cp)')
+    string(name: 'K3D_CLUSTER', defaultValue: 'my-karpenter-cp',  description: 'k3d cluster name (context=k3d-my-karpenter-cp)')
     string(name: 'APP_NAME',    defaultValue: 'hello-nginx',  description: 'K8s app/deployment name')
   }
 
