@@ -7,7 +7,7 @@ pipeline {
     string(name: 'K8S_NS',      defaultValue: 'hello',        description: 'Kubernetes namespace')
     booleanParam(name: 'FORCE_BUILD', defaultValue: false,    description: 'Force image build')
     booleanParam(name: 'FORCE_PUSH',  defaultValue: false,    description: 'Force push even if tag exists')
-    string(name: 'K3D_CLUSTER', defaultValue: 'my-karpenter-cp',  description: 'k3d cluster name (context=k3d-my-karpenter-cp)')
+    string(name: 'K3D_CLUSTER', defaultValue: 'my-karpenter-cp',  description: 'k3d cluster name (context=my-karpenter-cp)')
     string(name: 'APP_NAME',    defaultValue: 'hello-nginx',  description: 'K8s app/deployment name')
   }
 
@@ -31,7 +31,7 @@ pipeline {
         mkdir -p "$(dirname "$KCFG")"
 
         # Resolve params with safe defaults even if env vars are empty/unset
-        K3D_CLUSTER="${P_K3D_CLUSTER:-${K3D_CLUSTER:-k3d-my-karpenter-cp}}"
+        K3D_CLUSTER="${P_K3D_CLUSTER:-${K3D_CLUSTER:-my-karpenter-cp}}"
 
         if command -v k3d >/dev/null 2>&1; then
           echo "[prep] Fetching kubeconfig via k3d for cluster ${K3D_CLUSTER}"
